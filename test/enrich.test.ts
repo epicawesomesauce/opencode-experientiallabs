@@ -1,7 +1,7 @@
 import { test } from "node:test"
 import assert from "node:assert/strict"
 import { readFileSync } from "node:fs"
-import { buildEnricher } from "../src/enrich.ts"
+import { buildEnricher, fetchModelsDev } from "../src/enrich.ts"
 import { mapModel } from "../src/catalog.ts"
 import type { GatewayModel } from "../src/types.ts"
 
@@ -82,4 +82,39 @@ test("mapModel applies real dev meta end-to-end (Ruling 17: meta path coverage)"
   assert.ok(info.time && info.time.released > 0)
   // caps flow from dev modalities, not the ["text"] default:
   assert.ok(info.capabilities!.input.includes("image"))
+})
+
+test("fetchModelsDev normalizes the wrapped wire shape to the flat index (Task 6 A5)", async () => {
+  // The captured fixture carries models.dev's real wire shape:
+  // { [providerID]: { id, env, npm, name, doc, models: { [modelID]: ModelsDevModel } } }.
+  // fetchModelsDev must unwrap the `models` wrapper so the declared flat
+  // ModelsDevIndex return type is true (the runtime unwrap used to live only
+  // inside providerModels, making this function's type a lie).
+  const original = globalThis.fetch
+  globalThis.fetch = (async () => ({
+    ok: true,
+    status: 200,
+    json: async () => dev,
+  })) as typeof fetch
+  try {
+    const index = await fetchModelsDev()
+    assert.ok(index.anthropic, "provider entry exists")
+    assert.equal(
+      (index.anthropic as { models?: unknown }).models,
+      undefined,
+      "the per-provider `models` wrapper must be unwrapped",
+    )
+    assert.deepEqual(index.anthropic, dev.anthropic.models, "entry IS the provider's model record")
+    // The enricher works on the normalized index too — the flat record is its
+    // primary shape (providerModels falls through to the record itself):
+    const flatEnricher = buildEnricher(index)
+    const meta = flatEnricher({
+      id: "gpt-3.5-turbo",
+      data_policy: { providers: [{ provider: "experiential_cloud" }] },
+    } as GatewayModel)
+    assert.ok(meta)
+    assert.equal(meta.name, dev.openai.models["gpt-3.5-turbo"].name)
+  } finally {
+    globalThis.fetch = original
+  }
 })

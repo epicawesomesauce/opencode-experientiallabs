@@ -33,7 +33,17 @@ const UPSTREAM_TO_DEV: Record<string, string[]> = {
 export async function fetchModelsDev(): Promise<ModelsDevIndex> {
   const res = await fetch("https://models.dev/api.json")
   if (!res.ok) throw new Error(`experiential: models.dev returned ${res.status}`)
-  return (await res.json()) as ModelsDevIndex
+  // Task 6 A5: the wire shape (models.dev api.json and the captured trimmed
+  // fixture, same dump) wraps each provider's model record in a `models` field —
+  // normalize here so the declared flat ModelsDevIndex is type-true. Consumers
+  // holding a raw/wrapped index (buildEnricher below) still work: providerModels
+  // accepts both shapes.
+  const raw = (await res.json()) as Record<string, unknown>
+  const index: ModelsDevIndex = {}
+  for (const [pid, provider] of Object.entries(raw ?? {})) {
+    index[pid] = providerModels(provider)
+  }
+  return index
 }
 
 // The index type is stated record-flat, but the wire shape (models.dev api.json and the
