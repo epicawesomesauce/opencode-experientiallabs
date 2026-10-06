@@ -44,9 +44,15 @@ export default Plugin.define({
     //    Task 6 swaps the two load lines for src/cache.ts cached loads.
     let cred: Credential | undefined
     let models: Model.Info[] = []
+    let connection: Awaited<ReturnType<typeof ctx.integration.connection.active>> | undefined
     try {
       cred = await resolveCredential(ctx)
       if (cred) {
+        // Fix round R1, finding 2: the sourceConnection lookup runs only when the
+        // credential came from a connection (env-only setups never call it), and
+        // inside this try so a transient rejection degrades to "integration
+        // registered, provider skipped" instead of killing setup.
+        if (cred.via === "connection") connection = await ctx.integration.connection.active("experiential")
         const raw = await fetchCatalog(baseURL, cred.apiKey)
         const devIndex = await fetchModelsDev()
         const enrich = buildEnricher(devIndex)
@@ -58,12 +64,16 @@ export default Plugin.define({
       console.error(`experiential: skipping provider registration — ${err instanceof Error ? err.message : err}`)
     }
 
-    const connection = await ctx.integration.connection.active("experiential")
-
     // 3) Provider (Amendment 3) — no credential or empty catalog registers nothing.
     await ctx.provider.transform((editor) => {
       if (!cred || models.length === 0) return
       const info = Provider.Info.empty("experiential")
+      // Fix round R1, finding 1: this plugin resolves credentials itself (connection
+      // or env), so registration is the activation gate — "auto" would exclude the
+      // provider from location catalogs unless the integration has an active
+      // connection, and the env credential is invisible to that gate. Parity with
+      // config-defined providers.
+      info.activation = "enabled"
       info.name = "Experiential"
       info.integrationID = "experiential"
       info.package = "@opencode/ai/providers/openai-compatible"
