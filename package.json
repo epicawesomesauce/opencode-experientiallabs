@@ -4,6 +4,6 @@
   "type": "module",
   "private": true,
   "exports": { ".": "./src/index.ts" },
-  "scripts": { "test": "node --test --experimental-strip-types test/" },
+  "scripts": { "test": "node --test --experimental-strip-types" },
   "dependencies": { "@opencode/plugin": "^2.0.24" }
 }
