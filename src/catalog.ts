@@ -21,7 +21,7 @@ export async function fetchCatalog(baseURL: string, apiKey: string): Promise<Gat
 
 // Ruling 9: the live catalog emits supports_completions null/absent (never false) for
 // non-completions models; text-embedding-* models are null/absent too, so also drop by id.
-export function filterCatalog(data: GatewayModel[]): GatewayModel[] {
+function filterCatalog(data: GatewayModel[]): GatewayModel[] {
   return data.filter((m) => m.supports_completions !== false && !/embed/i.test(m.id))
 }
 
@@ -67,7 +67,8 @@ export function mapModel(raw: GatewayModel, meta?: ModelMeta): Model.Info {
   }
   const cost = toCost(raw)
   if (cost) info.cost = cost
-  else delete (info as { cost?: unknown }).cost // default() seeds cost: [] — model oracle requires absence
+  // Ruling 16: no-pricing models keep default()'s seeded cost: [] — the canonical
+  // "no pricing" representation (cost is a required field; never delete it).
   const compatibility = toCompatibility(raw)
   if (compatibility) info.compatibility = compatibility
   if (meta?.released) info.time = { released: meta.released }

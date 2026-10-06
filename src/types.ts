@@ -12,17 +12,13 @@
 // pricing{...all *_nano_usd_per_million_tokens}
 export interface GatewayPricing {
   // Fixture truth (2026-10-06 capture): pricing keys are "*_nano_usd_per_million_tokens"
-  // (the plan's short input/cached_input names don't exist on the wire).
+  // (the plan's short input/cached_input names don't exist on the wire); the wire payload
+  // also carries suffixed keys (cache_creation_1h_*, reasoning_*, cache_write_*) and
+  // long_context/flex/priority tier objects — documented in the union comment below.
   input_nano_usd_per_million_tokens?: number | null
   cached_input_nano_usd_per_million_tokens?: number | null
   cache_creation_input_nano_usd_per_million_tokens?: number | null
-  cache_creation_1h_input_nano_usd_per_million_tokens?: number | null
   output_nano_usd_per_million_tokens?: number | null
-  reasoning_nano_usd_per_million_tokens?: number | null
-  cache_write_nano_usd_per_million_tokens?: number | null
-  long_context?: unknown
-  flex?: unknown
-  priority?: unknown
 }
 export interface GatewayModel {
   id: string

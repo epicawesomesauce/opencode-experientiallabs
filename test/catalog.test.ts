@@ -63,7 +63,9 @@ test("local GPU model gets defaults and no cost", () => {
   const m = byId.get("glm-5.3-local-34d26e50")!
   assert.equal(m.limit!.context, DEFAULT_CONTEXT)
   assert.equal(m.limit!.output, DEFAULT_OUTPUT)
-  assert.equal(m.cost, undefined)
+  // Ruling 16: cost is a REQUIRED Model.Info field — default() seeds cost: [] as the
+  // canonical "no pricing" representation; the field must never be deleted.
+  assert.deepEqual(m.cost, [])
 })
 
 test("status active, provider id experiential", () => {
