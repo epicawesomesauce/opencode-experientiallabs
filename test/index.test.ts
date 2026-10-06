@@ -95,11 +95,26 @@ const mockCtx = (
 
 const recordingEditor = () => {
   const added: Array<{ info: Record<string, any>; models: unknown[]; sourceConnection?: unknown }> = []
+  // Final fix wave (Minor 4): the integration transform records its editor
+  // calls too, so the /connect method payload can be pinned in tests.
+  const integrations: Record<string, Record<string, unknown>> = {}
+  const methods: Array<Record<string, any>> = []
   return {
     added,
+    integrations,
+    methods,
     editor: {
       add: (input: { info: unknown; models: unknown[]; sourceConnection?: unknown }) => {
         added.push(input as never)
+      },
+      update: (id: string, apply: (target: Record<string, unknown>) => void) => {
+        integrations[id] = {}
+        apply(integrations[id])
+      },
+      method: {
+        update: (payload: Record<string, any>) => {
+          methods.push(payload)
+        },
       },
     },
   }
@@ -177,6 +192,43 @@ test("connection credential → sourceConnection binds the active connection", a
   })
 })
 
+// Final fix wave, Important 1: on reconnect with the SAME API key, the
+// (via, keyHash, baseURL, models) fingerprint is identical, so the refresh's
+// fixed-point early-return must NOT skip rebinding sourceConnection to the
+// NEW connection object the host handed back — the old object is deleted.
+test("reconnect with the same key rebinds sourceConnection to the NEW connection", async () => {
+  delete process.env.EXPLABS_API_KEY
+  const conn1 = { type: "credential", id: "conn1", label: "API key", method: "key" }
+  const conn2 = { type: "credential", id: "conn2", label: "API key", method: "key" }
+  let current = conn1
+  const { ctx, captured, calls } = mockCtx({
+    active: () => current,
+    resolve: () => ({ type: "key", key: "conn-key" }), // SAME key before and after reconnect
+  })
+  await withFixtureFetch(async (fetches) => {
+    await setup(ctx)
+    await tick()
+    const r1 = recordingEditor()
+    captured.provider[0](r1.editor)
+    assert.equal(r1.added.length, 1)
+    assert.equal(r1.added[0].sourceConnection, conn1, "baseline: bound to the first connection")
+    await tick() // the refresh fired by that invocation converges
+
+    // Disconnect → reconnect: same key, NEW connection object with a DIFFERENT
+    // id — only connection identity distinguishes it from the stale state.
+    current = conn2
+    const stale = recordingEditor()
+    captured.provider[0](stale.editor) // host re-evaluates on the credential change
+    assert.equal(stale.added[0].sourceConnection, conn1, "still stale until the fired refresh rebinds")
+    await tick()
+    assert.equal(calls.reload, 2, "identity change must reload even when the fingerprint matches")
+    const r3 = recordingEditor()
+    captured.provider[0](r3.editor)
+    assert.equal(r3.added[0].sourceConnection, conn2, "sourceConnection must follow the new connection object")
+    assert.equal(fetches.count, 2, "no refetch — the cached catalog is fresh")
+  })
+})
+
 test("no credential → integration registered, provider transform adds nothing, no loads", async () => {
   delete process.env.EXPLABS_API_KEY
   const { ctx, captured, calls } = mockCtx({ active: () => undefined })
@@ -197,6 +249,40 @@ test("no credential → integration registered, provider transform adds nothing,
     assert.equal(added.length, 0)
     assert.equal(fetches.count, 0, "no fetch happens without a credential")
     assert.equal(calls.reload, 0)
+  } finally {
+    globalThis.fetch = original
+  }
+})
+
+// Final fix wave (Minor 4): pin the integration transform's method payload.
+// The /connect API contract {key, answer:{apiKey}} depends on the form field
+// key being exactly "apiKey" — a rename here silently breaks key paste.
+test("integration transform publishes the /connect key-paste method payload", async () => {
+  delete process.env.EXPLABS_API_KEY
+  const { ctx, captured } = mockCtx({ active: () => undefined })
+  const original = globalThis.fetch
+  const fetches = { count: 0 }
+  globalThis.fetch = (async () => {
+    fetches.count++
+    throw new Error("test: unexpected network call")
+  }) as typeof fetch
+  try {
+    await setup(ctx)
+    assert.equal(captured.integration.length, 1, "integration transform must be registered")
+    const { integrations, methods, editor } = recordingEditor()
+    captured.integration[0](editor)
+    assert.equal(integrations["experiential"].name, "Experiential")
+    assert.equal(methods.length, 1, "exactly one method.update payload")
+    const payload = methods[0]
+    assert.equal(payload.integrationID, "experiential")
+    assert.equal(payload.method.type, "key")
+    const form = payload.method.form as Array<Record<string, any>>
+    assert.ok(
+      form.some((f) => f.key === "apiKey" && f.required === true),
+      'the /connect contract depends on a required form field keyed "apiKey"',
+    )
+    await tick() // post-setup refresh: no credential → returns before any load
+    assert.equal(fetches.count, 0, "integration registration is purely local")
   } finally {
     globalThis.fetch = original
   }
@@ -233,9 +319,13 @@ test("transient active() rejection degrades setup to integration-only; refresh s
       assert.equal(degraded.added.length, 0, "provider must be skipped when the connection lookup rejects")
       await tick()
       // Task 6: the post-setup refresh re-resolves the credential (the transient
-      // failure is gone) and self-heals through reload.
+      // failure is gone) and self-heals through reload. Final fix wave (Important
+      // 2): the invocation above fired while that refresh was in flight, so its
+      // signal is re-run as pending — and because the mock host never
+      // re-evaluates the transform on reload, that re-run still sees the stale
+      // registeredFp and reloads once more. The next invocation converges.
       assert.equal(fetches.count, 2)
-      assert.equal(calls.reload, 1)
+      assert.equal(calls.reload, 2, "self-heal reload + the pending re-run's reload")
       const { added, editor } = recordingEditor()
       captured.provider[0](editor)
       assert.equal(added.length, 1)
@@ -243,7 +333,7 @@ test("transient active() rejection degrades setup to integration-only; refresh s
       assert.equal(added[0].sourceConnection, connection)
       assert.ok(added[0].models.length > 0)
       await tick() // the refresh fired by that invocation converges: no reload
-      assert.equal(calls.reload, 1)
+      assert.equal(calls.reload, 2)
       assert.equal(fetches.count, 2)
     })
   } finally {
@@ -328,8 +418,10 @@ test("stale cache still registers models; a failing refetch serves stale again w
       await tick()
       // A2: the refresh's refetch fails → the stale cache is re-served; the
       // fingerprint matches what the transform just registered → NO reload
-      // (the loop-guard fixed point under persistent failure).
-      assert.equal(fetches.count, 1, "one refetch attempt, then stale-serve")
+      // (the loop-guard fixed point under persistent failure). Final fix wave
+      // (Important 2): the invocation above fired mid-flight, so its signal
+      // re-runs as pending — one more refetch attempt, still stale-served.
+      assert.equal(fetches.count, 2, "one refetch attempt per refresh run — the pending re-run retries")
       assert.equal(calls.reload, 0)
       // A later host re-evaluation fires another refresh — it must converge
       // the same way instead of reloading forever.
@@ -337,7 +429,7 @@ test("stale cache still registers models; a failing refetch serves stale again w
       captured.provider[0](again.editor)
       assert.equal(again.added.length, 1)
       await tick()
-      assert.equal(fetches.count, 2, "one attempt per refresh, still stale-served")
+      assert.equal(fetches.count, 3, "one attempt per refresh run, still stale-served")
       assert.equal(calls.reload, 0, "loop guard holds under persistent outage")
     } finally {
       globalThis.fetch = original
@@ -367,19 +459,66 @@ test("first boot with empty cache and a gateway outage degrades without a reload
     try {
       await setup(ctx) // must resolve — the fetch failure never reaches setup
       const { added, editor } = recordingEditor()
-      captured.provider[0](editor) // fires a guarded refresh (in-flight → skipped)
+      captured.provider[0](editor) // fires a refresh while one is in flight (pending signal)
       assert.equal(added.length, 0, "first-boot outage registers nothing")
       await tick()
       assert.equal(calls.reload, 0, "nothing loaded → nothing to publish → no reload")
-      assert.equal(fetches.count, 1, "one fetch attempt, by the post-setup refresh")
+      assert.equal(fetches.count, 2, "post-setup refresh + the pending re-run both attempt once")
     } finally {
       globalThis.fetch = original
       console.error = originalErr
     }
-    // Exactly one console.error and it is the refresh failure (A2 no-cache
-    // rethrow → refresh catch), never a second one from the guarded re-fire.
-    assert.equal(errors.length, 1)
+    // Final fix wave (Important 2): the mid-flight signal is never dropped —
+    // the pending re-run retries the failed fetch and reports it too. Both
+    // console.errors are refresh failures; setup stayed clean.
+    assert.equal(errors.length, 2)
     assert.match(errors[0], /refresh failed/)
+    assert.match(errors[1], /refresh failed/)
+  } finally {
+    delete process.env.EXPLABS_API_KEY
+  }
+})
+
+// Final fix wave, Important 2: a credential change landing inside an in-flight
+// refresh window must not be dropped. The transform evaluation fired while the
+// post-setup refresh is parked on a slow fetch has to leave a pending signal
+// that re-runs refresh once the in-flight one completes.
+test("a credential change landing inside an in-flight refresh is re-run, not dropped", async () => {
+  process.env.EXPLABS_API_KEY = "env-key-1"
+  try {
+    const { ctx, captured, calls } = mockCtx({ active: () => undefined })
+    let release!: () => void
+    const gate = new Promise<void>((r) => (release = r))
+    const original = globalThis.fetch
+    const fetches = { count: 0 }
+    globalThis.fetch = (async (input: unknown) => {
+      fetches.count++
+      const url = String(input)
+      if (url.endsWith("/models")) {
+        await gate // slow catalog fetch keeps the post-setup refresh in flight
+        return jsonResponse(catalogFixture)
+      }
+      if (url === "https://models.dev/api.json") return jsonResponse(modelsDevFixture)
+      throw new Error(`test: unexpected fetch ${url}`)
+    }) as typeof fetch
+    try {
+      await setup(ctx) // post-setup refresh starts and parks on the gate
+      // Credential change lands INSIDE the in-flight window...
+      process.env.EXPLABS_API_KEY = "env-key-2"
+      // ...and the host re-evaluates the provider catalog for it.
+      const r1 = recordingEditor()
+      captured.provider[0](r1.editor) // fires a refresh while one is in flight
+      release() // the slow fetch resolves; the in-flight refresh completes
+      await tick()
+      assert.equal(calls.reload, 2, "the pending re-run must republish the new credential")
+      assert.equal(fetches.count, 3, "catalog (key1) + models.dev + catalog (key2)")
+      const r2 = recordingEditor()
+      captured.provider[0](r2.editor)
+      assert.equal(r2.added.length, 1)
+      assert.equal(r2.added[0].info.settings.apiKey, "env-key-2", "the mid-flight credential change must land")
+    } finally {
+      globalThis.fetch = original
+    }
   } finally {
     delete process.env.EXPLABS_API_KEY
   }

@@ -31,7 +31,8 @@ const UPSTREAM_TO_DEV: Record<string, string[]> = {
 }
 
 export async function fetchModelsDev(): Promise<ModelsDevIndex> {
-  const res = await fetch("https://models.dev/api.json")
+  // Final fix wave (Minor 3): same 30s ceiling as the gateway fetch.
+  const res = await fetch("https://models.dev/api.json", { signal: AbortSignal.timeout(30_000) })
   if (!res.ok) throw new Error(`experiential: models.dev returned ${res.status}`)
   // Task 6 A5: the wire shape (models.dev api.json and the captured trimmed
   // fixture, same dump) wraps each provider's model record in a `models` field —

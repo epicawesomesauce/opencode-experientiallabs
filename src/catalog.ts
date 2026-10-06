@@ -14,6 +14,8 @@ export interface ModelMeta {
 export async function fetchCatalog(baseURL: string, apiKey: string): Promise<GatewayModel[]> {
   const res = await fetch(`${baseURL}/models`, {
     headers: { Authorization: `Bearer ${apiKey}` },
+    // Final fix wave (Minor 3): never let a hung gateway stall a refresh forever.
+    signal: AbortSignal.timeout(30_000),
   })
   if (!res.ok) throw new Error(`experiential: /models returned ${res.status}`)
   return filterCatalog(((await res.json()) as GatewayModelsResponse).data)

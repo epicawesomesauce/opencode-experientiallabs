@@ -50,7 +50,9 @@ export default Plugin.define({
     //    async contexts, never from a transform.
     const store: StorageLike | undefined = ctx.storage
     let cred: Credential | undefined
-    let connection: Awaited<ReturnType<typeof ctx.integration.connection.active>> | undefined
+    // Final fix wave (Minor 5): the awaited return type already resolves to
+    // ConnectionInfo | undefined — the trailing union member was dead.
+    let connection: Awaited<ReturnType<typeof ctx.integration.connection.active>>
     let models: Model.Info[] = []
     // Fingerprint of what the transform last served the host — (via, keyHash,
     // baseURL) signature (A7) plus a hash of the mapped models. refresh
@@ -60,6 +62,10 @@ export default Plugin.define({
     let registeredFp: string | undefined
     const fingerprint = (c: Credential, mapped: Model.Info[]): string =>
       `${c.via}:${createHash("sha1").update(c.apiKey).digest("hex").slice(0, 12)}:${baseURL}:${createHash("sha1").update(JSON.stringify(mapped)).digest("hex")}`
+    // Final fix wave (Important 1): connection identity joins change detection.
+    // ConnectionInfo is a union and only the credential variant carries an id,
+    // so read it structurally — env-shaped connections hash to "".
+    const connectionId = (c: typeof connection): string => (c && "id" in c ? c.id : "")
 
     try {
       cred = await resolveCredential(ctx)
@@ -90,8 +96,16 @@ export default Plugin.define({
     //    failure so the degrade path keeps integration-without-provider), and
     //    reloads only when what would be registered differs from registeredFp.
     let refreshing = false
+    let pending = false
     const refresh = async (): Promise<void> => {
-      if (refreshing) return
+      if (refreshing) {
+        // Final fix wave (Important 2): a signal arriving while a refresh is
+        // in-flight (e.g. the host re-evaluating the catalog on a credential
+        // change) is coalesced into one pending re-run instead of being
+        // dropped — an in-flight window can last seconds on a cold fetch.
+        pending = true
+        return
+      }
       refreshing = true
       try {
         const nextCred = await resolveCredential(ctx)
@@ -107,7 +121,14 @@ export default Plugin.define({
         const raw = await loadCatalog(store, nextCred, baseURL)
         const devIndex = await loadModelsDev(store)
         const mapped = mapCatalog(raw, buildEnricher(devIndex))
-        if (fingerprint(nextCred, mapped) === registeredFp) return // fixed point: no reload
+        // Final fix wave (Important 1): a reconnect with the SAME key yields an
+        // identical fingerprint, so identity alone must force a rebind + reload —
+        // the host deleted the old connection object it handed out. Only a
+        // present nextConnection counts: a transient lookup miss keeps the last
+        // binding instead of flapping the registration.
+        const connectionChanged =
+          nextConnection !== undefined && connectionId(nextConnection) !== connectionId(connection)
+        if (fingerprint(nextCred, mapped) === registeredFp && !connectionChanged) return // fixed point: no reload
         cred = nextCred
         connection = nextConnection
         models = mapped
@@ -116,6 +137,12 @@ export default Plugin.define({
         console.error(`experiential: refresh failed — ${err instanceof Error ? err.message : err}`)
       } finally {
         refreshing = false
+        // Final fix wave (Important 2): run the coalesced signal once the
+        // in-flight refresh settles — the credential may have changed mid-flight.
+        if (pending) {
+          pending = false
+          void refresh()
+        }
       }
     }
 
