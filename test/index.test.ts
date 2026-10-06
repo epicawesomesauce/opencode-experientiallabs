@@ -220,6 +220,11 @@ test("transient active() rejection degrades setup to integration-only; refresh s
   try {
     await withFixtureFetch(async (fetches) => {
       await setup(ctx)
+      // A4 contract, pinned directly (fix round R1, I1): "integration registered,
+      // provider skipped" — both transforms stay registered; only the add is
+      // skipped.
+      assert.equal(captured.integration.length, 1, "integration stays registered")
+      assert.equal(captured.provider.length, 1, "provider transform stays registered")
       // A4 degrade path preserved: the transient rejection inside setup's try is
       // caught by the single console.error — setup must NOT reject, and the
       // degraded closure registers nothing.
@@ -337,6 +342,44 @@ test("stale cache still registers models; a failing refetch serves stale again w
     } finally {
       globalThis.fetch = original
     }
+  } finally {
+    delete process.env.EXPLABS_API_KEY
+  }
+})
+
+test("first boot with empty cache and a gateway outage degrades without a reload", async () => {
+  process.env.EXPLABS_API_KEY = "env-key"
+  try {
+    // No stale-cache seed this time: nothing cached, gateway down from the
+    // very first refresh (fix round R1, I2 — mirrors the outage test above
+    // without the seed). A2's rethrow must land in refresh's catch, keeping
+    // the integration-without-provider degrade and setup resolvable.
+    const { ctx, captured, calls } = mockCtx({ active: () => undefined })
+    const errors: string[] = []
+    const originalErr = console.error
+    console.error = (msg: unknown) => errors.push(String(msg))
+    const original = globalThis.fetch
+    const fetches = { count: 0 }
+    globalThis.fetch = (async () => {
+      fetches.count++
+      throw new Error("test: simulated gateway outage")
+    }) as typeof fetch
+    try {
+      await setup(ctx) // must resolve — the fetch failure never reaches setup
+      const { added, editor } = recordingEditor()
+      captured.provider[0](editor) // fires a guarded refresh (in-flight → skipped)
+      assert.equal(added.length, 0, "first-boot outage registers nothing")
+      await tick()
+      assert.equal(calls.reload, 0, "nothing loaded → nothing to publish → no reload")
+      assert.equal(fetches.count, 1, "one fetch attempt, by the post-setup refresh")
+    } finally {
+      globalThis.fetch = original
+      console.error = originalErr
+    }
+    // Exactly one console.error and it is the refresh failure (A2 no-cache
+    // rethrow → refresh catch), never a second one from the guarded re-fire.
+    assert.equal(errors.length, 1)
+    assert.match(errors[0], /refresh failed/)
   } finally {
     delete process.env.EXPLABS_API_KEY
   }

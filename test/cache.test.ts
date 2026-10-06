@@ -41,15 +41,10 @@ const memoryStore = (): StorageLike & { map: Map<string, unknown> } => {
 
 const jsonResponse = (body: unknown) => ({ ok: true, status: 200, json: async () => body })
 
-const withFetch = (
-  calls: { count: number },
-  run: () => Promise<void>,
-  opts: { fail?: boolean } = {},
-) =>
+const withFetch = (calls: { count: number }, run: () => Promise<void>) =>
   withMockFetch(
     async (input: unknown) => {
       calls.count++
-      if (opts.fail) throw new Error("test: simulated network outage")
       const url = String(input)
       if (url.endsWith("/models")) return jsonResponse(catalogFixture)
       if (url === "https://models.dev/api.json") return jsonResponse(modelsDevFixture)
