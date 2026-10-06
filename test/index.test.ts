@@ -3,7 +3,7 @@ import assert from "node:assert/strict"
 import { readFileSync } from "node:fs"
 import { createHash } from "node:crypto"
 import plugin from "../src/index.ts"
-import { loadCatalog, loadModelsDev, CATALOG_TTL_MS } from "../src/cache.ts"
+import { loadCatalog, loadExperientialCatalog, CATALOG_TTL_MS } from "../src/cache.ts"
 
 // These tests exercise the REAL registered transform callbacks from src/index.ts:
 // setup() runs against a structural ctx mock (integration/provider transform
@@ -18,8 +18,8 @@ const setup = (ctx: unknown) => (plugin as { setup: (ctx: unknown) => Promise<vo
 const catalogFixture = JSON.parse(
   readFileSync(new URL("../fixtures/experiential-models.json", import.meta.url), "utf8"),
 )
-const modelsDevFixture = JSON.parse(
-  readFileSync(new URL("../fixtures/modelsdev-trimmed.json", import.meta.url), "utf8"),
+const metaFixture = JSON.parse(
+  readFileSync(new URL("../fixtures/experiential-catalog.json", import.meta.url), "utf8"),
 )
 
 // Every mock await resolves in microtasks, so one macrotask tick guarantees the
@@ -35,7 +35,7 @@ const withFixtureFetch = async (run: (fetches: { count: number }) => Promise<voi
     fetches.count++
     const url = String(input)
     if (url.endsWith("/models")) return jsonResponse(catalogFixture)
-    if (url === "https://models.dev/api.json") return jsonResponse(modelsDevFixture)
+    if (url === "https://api.experientiallabs.ai/api/models?limit=1000") return jsonResponse(metaFixture)
     throw new Error(`test: unexpected fetch ${url}`)
   }) as typeof fetch
   try {
@@ -134,7 +134,7 @@ test("env credential → provider registered with activation 'enabled', no sourc
       // fetches happen in the fire-and-forget refresh, never during setup.
       assert.equal(fetches.count, 0, "setup must not await the network")
       await tick()
-      assert.equal(fetches.count, 2, "refresh fetches catalog + models.dev")
+      assert.equal(fetches.count, 2, "refresh fetches catalog + catalog metadata")
       assert.equal(calls.reload, 1, "first boot: empty closure → refresh republishes via reload")
       assert.equal(captured.integration.length, 1, "integration transform must be registered")
       assert.equal(captured.provider.length, 1, "provider transform must be registered")
@@ -154,7 +154,7 @@ test("env credential → provider registered with activation 'enabled', no sourc
       assert.equal(added[0].models.length, 299)
       assert.equal(added[0].sourceConnection, undefined)
       // A6: cached under the sha1-slice key — never the key material itself.
-      assert.deepEqual([...storage.keys()].sort(), [cacheKey("env-key"), "experiential:modelsdev"].sort())
+      assert.deepEqual([...storage.keys()].sort(), [cacheKey("env-key"), "experiential:metadata"].sort())
       // Fix round R1 finding 2 (Task 6-adjusted): env credentials never trigger
       // the sourceConnection lookup — every active() call is a resolveCredential
       // probe: 1 in setup + 1 in the post-setup refresh + 1 fired by this
@@ -354,7 +354,7 @@ test("first boot fetches only after setup; warm reboot within TTL registers from
       await setup(first.ctx)
       assert.equal(fetches.count, 0, "setup must not await the network (A3 race fix)")
       await tick()
-      assert.equal(fetches.count, 2, "the post-setup refresh fetches catalog + models.dev once")
+      assert.equal(fetches.count, 2, "the post-setup refresh fetches catalog + metadata once")
       assert.equal(first.calls.reload, 1)
       const r1 = recordingEditor()
       first.captured.provider[0](r1.editor)
@@ -395,7 +395,7 @@ test("stale cache still registers models; a failing refetch serves stale again w
     // catalog entry past its TTL.
     await withFixtureFetch(async () => {
       await loadCatalog(storeView, { apiKey: "env-key", via: "env" }, "https://api.experientiallabs.ai/v1")
-      await loadModelsDev(storeView)
+      await loadExperientialCatalog(storeView, "https://api.experientiallabs.ai", "env-key")
     })
     ;(shared.get(cacheKey("env-key")) as { fetchedAt: number }).fetchedAt =
       Date.now() - CATALOG_TTL_MS - 60_000
@@ -498,7 +498,7 @@ test("a credential change landing inside an in-flight refresh is re-run, not dro
         await gate // slow catalog fetch keeps the post-setup refresh in flight
         return jsonResponse(catalogFixture)
       }
-      if (url === "https://models.dev/api.json") return jsonResponse(modelsDevFixture)
+      if (url === "https://api.experientiallabs.ai/api/models?limit=1000") return jsonResponse(metaFixture)
       throw new Error(`test: unexpected fetch ${url}`)
     }) as typeof fetch
     try {
@@ -511,7 +511,7 @@ test("a credential change landing inside an in-flight refresh is re-run, not dro
       release() // the slow fetch resolves; the in-flight refresh completes
       await tick()
       assert.equal(calls.reload, 2, "the pending re-run must republish the new credential")
-      assert.equal(fetches.count, 3, "catalog (key1) + models.dev + catalog (key2)")
+      assert.equal(fetches.count, 3, "catalog (key1) + metadata + catalog (key2)")
       const r2 = recordingEditor()
       captured.provider[0](r2.editor)
       assert.equal(r2.added.length, 1)

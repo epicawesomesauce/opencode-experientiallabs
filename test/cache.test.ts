@@ -2,20 +2,20 @@ import { test } from "node:test"
 import assert from "node:assert/strict"
 import { readFileSync } from "node:fs"
 import { createHash } from "node:crypto"
-import { isFresh, loadCatalog, loadModelsDev, CATALOG_TTL_MS, MODELS_DEV_TTL_MS, type StorageLike } from "../src/cache.ts"
+import { isFresh, loadCatalog, loadExperientialCatalog, CATALOG_TTL_MS, EXPERIENTIAL_META_TTL_MS, type StorageLike } from "../src/cache.ts"
 import type { Credential } from "../src/auth.ts"
 import type { GatewayModel } from "../src/types.ts"
 
 // Task 6 A8: cache behavior under the TTL + A2 error policy. Global fetch is
 // mocked with the repo fixtures exactly like test/index.test.ts (routes:
-// {baseURL}/models and https://models.dev/api.json), with a call counter so
-// fresh-hits can be pinned as "no fetch".
+// {baseURL}/models and https://api.experientiallabs.ai/api/models?limit=1000),
+// with a call counter so fresh-hits can be pinned as "no fetch".
 
 const catalogFixture = JSON.parse(
   readFileSync(new URL("../fixtures/experiential-models.json", import.meta.url), "utf8"),
 )
-const modelsDevFixture = JSON.parse(
-  readFileSync(new URL("../fixtures/modelsdev-trimmed.json", import.meta.url), "utf8"),
+const metaFixture = JSON.parse(
+  readFileSync(new URL("../fixtures/experiential-catalog.json", import.meta.url), "utf8"),
 )
 
 const baseURL = "https://api.experientiallabs.ai/v1"
@@ -47,7 +47,7 @@ const withFetch = (calls: { count: number }, run: () => Promise<void>) =>
       calls.count++
       const url = String(input)
       if (url.endsWith("/models")) return jsonResponse(catalogFixture)
-      if (url === "https://models.dev/api.json") return jsonResponse(modelsDevFixture)
+      if (url === "https://api.experientiallabs.ai/api/models?limit=1000") return jsonResponse(metaFixture)
       throw new Error(`test: unexpected fetch ${url}`)
     },
     run,
@@ -156,45 +156,42 @@ test("loadCatalog fetch failure with no cache rethrows (A2 first-run degrade)", 
   })
 })
 
-test("loadModelsDev miss fetches, stores the normalized flat index", async () => {
+test("loadExperientialCatalog miss fetches, stores, and returns the catalog metadata", async () => {
   const store = memoryStore()
   const calls = { count: 0 }
   await withFetch(calls, async () => {
     const before = Date.now()
-    const result = await loadModelsDev(store)
+    const result = await loadExperientialCatalog(store, "https://api.experientiallabs.ai", "env-key")
     assert.equal(calls.count, 1)
-    // A5: fetchModelsDev normalizes the wrapped wire shape, so the cached
-    // index is the declared flat ModelsDevIndex.
-    assert.ok(result.anthropic)
-    assert.equal((result.anthropic as { models?: unknown }).models, undefined, "no wire wrapper")
-    assert.deepEqual(result.anthropic, (modelsDevFixture as Record<string, never>).anthropic.models)
-    const entry = store.map.get("experiential:modelsdev") as { fetchedAt: number; data: unknown }
-    assert.ok(entry, "stored under the shared modelsdev key")
+    assert.deepEqual(result, metaFixture, "the catalog body flows through structurally intact")
+    assert.equal(result.models.length, 5)
+    const entry = store.map.get("experiential:metadata") as { fetchedAt: number; data: unknown }
+    assert.ok(entry, "stored under the shared metadata key")
     assert.ok(entry.fetchedAt >= before)
     assert.equal(entry.data, result)
   })
 })
 
-test("loadModelsDev offline serves the stale cache instead of throwing", async () => {
+test("loadExperientialCatalog offline serves the stale cache instead of throwing", async () => {
   const store = memoryStore()
-  const stale = { anthropic: { "claude-opus-4-5": { id: "claude-opus-4-5" } } }
-  store.map.set("experiential:modelsdev", {
-    fetchedAt: Date.now() - MODELS_DEV_TTL_MS - 60_000,
+  const stale = { models: [{ model: { slug: "claude-fable-5.1", display_name: "Claude Fable 5.1" } }] }
+  store.map.set("experiential:metadata", {
+    fetchedAt: Date.now() - EXPERIENTIAL_META_TTL_MS - 60_000,
     data: stale,
   })
   const calls = { count: 0 }
   await withFailingFetch(calls, async () => {
-    const result = await loadModelsDev(store)
+    const result = await loadExperientialCatalog(store, "https://api.experientiallabs.ai", "env-key")
     assert.equal(calls.count, 1, "refetch was attempted")
-    assert.equal(result, stale, "stale index served, enrichment survives the outage")
+    assert.equal(result, stale, "stale catalog served, enrichment survives the outage")
   })
 })
 
-test("loadModelsDev offline with no cache degrades to an empty index", async () => {
+test("loadExperientialCatalog offline with no cache degrades to an empty catalog", async () => {
   const store = memoryStore()
   const calls = { count: 0 }
   await withFailingFetch(calls, async () => {
-    const result = await loadModelsDev(store)
+    const result = await loadExperientialCatalog(store, "https://api.experientiallabs.ai", "env-key")
     assert.equal(calls.count, 1)
     assert.deepEqual(result, {}, "no cache + failure → {}, never a throw")
   })

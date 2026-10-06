@@ -1,9 +1,9 @@
 import { Plugin, Provider } from "@opencode/plugin"
 import type { Model } from "@opencode/plugin"
 import { mapCatalog } from "./catalog.ts"
-import { buildEnricher } from "./enrich.ts"
+import { buildEnricher, deriveApiBase } from "./enrich.ts"
 import { resolveCredential, type Credential } from "./auth.ts"
-import { loadCatalog, loadModelsDev, peekCatalog, peekModelsDev, type StorageLike } from "./cache.ts"
+import { loadCatalog, loadExperientialCatalog, peekCatalog, peekExperientialCatalog, type StorageLike } from "./cache.ts"
 import { createHash } from "node:crypto"
 
 const DEFAULT_BASE_URL = "https://api.experientiallabs.ai/v1"
@@ -12,6 +12,8 @@ export default Plugin.define({
   id: "experiential",
   async setup(ctx) {
     const baseURL = (ctx.options as { baseURL?: string } | undefined)?.baseURL ?? DEFAULT_BASE_URL
+    // Catalog metadata lives OUTSIDE the /v1 surface: {apiBase}/api/models.
+    const apiBase = deriveApiBase(baseURL)
 
     // 1) Integration (Amendment 2) — registered UNCONDITIONALLY so "Experiential"
     //    appears in /connect with a key-paste method even before any credential
@@ -79,8 +81,8 @@ export default Plugin.define({
         // cache peek here (fresh OR stale, never a fetch), with the actual
         // fetching deferred to the refresh below.
         const cached = store ? await peekCatalog(store, cred) : undefined
-        const devIndex = store ? await peekModelsDev(store) : undefined
-        if (cached) models = mapCatalog(cached, buildEnricher(devIndex ?? {}))
+        const meta = store ? await peekExperientialCatalog(store) : undefined
+        if (cached) models = mapCatalog(cached, buildEnricher(meta ?? {}))
       }
     } catch (err) {
       // Amendment 4: a bad key or failed load degrades to "no models listed"
@@ -91,9 +93,9 @@ export default Plugin.define({
     // 3) refresh (A3/A7): fire-and-forget, guarded against overlap. Re-resolves
     //    the CURRENT credential (a /connect key change never re-runs setup, but
     //    the host re-evaluates the provider catalog on credential change, which
-    //    re-invokes the transform, which fires this), loads catalog + models.dev
-    //    through the TTL cache (A2: stale-serve on failure, rethrow on first-run
-    //    failure so the degrade path keeps integration-without-provider), and
+    //    re-invokes the transform, which fires this), loads catalog + catalog
+    //    metadata through the TTL cache (A2: stale-serve on failure, rethrow on
+    //    first-run failure so the degrade path keeps integration-without-provider), and
     //    reloads only when what would be registered differs from registeredFp.
     let refreshing = false
     let pending = false
@@ -119,8 +121,8 @@ export default Plugin.define({
           }
         }
         const raw = await loadCatalog(store, nextCred, baseURL)
-        const devIndex = await loadModelsDev(store)
-        const mapped = mapCatalog(raw, buildEnricher(devIndex))
+        const meta = await loadExperientialCatalog(store, apiBase, nextCred.apiKey)
+        const mapped = mapCatalog(raw, buildEnricher(meta))
         // Final fix wave (Important 1): a reconnect with the SAME key yields an
         // identical fingerprint, so identity alone must force a rebind + reload —
         // the host deleted the old connection object it handed out. Only a
