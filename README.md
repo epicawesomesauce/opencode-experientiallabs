@@ -92,4 +92,4 @@ The suite runs 41 tests via `node --test --experimental-strip-types` (hence Node
 
 ## Brand assets
 
-The logo and square logo in [`assets/`](assets/) are official Experiential Labs brand artifacts (© Experiential Labs), sourced from [experientiallabs.ai](https://www.experientiallabs.ai) and their GitHub organization. They are included to identify the service this plugin integrates with. No public brand-guidelines page exists as of October 2026; the marks are used unmodified.
+The logo, square logo, and banner in [`assets/`](assets/) are official Experiential Labs brand artifacts (© Experiential Labs), sourced from [experientiallabs.ai](https://www.experientiallabs.ai) and their GitHub organization. They are included to identify the service this plugin integrates with. No public brand-guidelines page exists as of October 2026; the marks are used unmodified.
